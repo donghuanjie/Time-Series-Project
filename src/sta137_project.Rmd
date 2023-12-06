@@ -1,0 +1,174 @@
+---
+title: "STA137-project"
+output: html_document
+date: "2023-12-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tseries)
+library(forecast)
+```
+
+# The Analysis for US Regular All Formulations Gas Price
+
+```{r gas dataset}
+gas.dat = read.csv("../data/GASREGW.csv")
+gas.dat[, 2] = as.numeric(gas.dat[, 2])
+gas_ts = ts(gas.dat[,2], start = 2004, frequency = 12)
+ts.plot(gas_ts)
+```
+
+### Deseasonalization
+
+First, we consider to use the 2-sided MA process to deseasonalize the data.
+
+```{r 2-sided ma}
+mhat = stats::filter(gas_ts, sides = 2, c(0.5, rep(1,11), 0.5)/12)
+A = matrix(gas_ts, ncol=12, byrow = TRUE)
+M = matrix(mhat, ncol=12, byrow = TRUE)
+mu = array(0,12)
+for (k in 1:6) mu[k] = sum(A[2:20,k]-M[2:20,k])/19
+for (k in 7:12) mu[k] = sum(A[1:19,k]-M[1:19,k])/19
+shat = mu-mean(mu)
+print(shat)
+```
+
+Therefore, we got the seasonality for each month under 2 sided MA process. 
+
+```{r 2-sided deseasonalization}
+shat = rep(shat, 20)
+deseasonalized_gas_ts = gas_ts - ts(shat, start = start(gas_ts), frequency = 12)
+ts.plot(gas_ts, deseasonalized_gas_ts, col=c("black", "blue"), lty=c(1,2))
+```
+
+### Detrend
+
+Since our dataset contains 240 data points for 20 years monthly data and the gas price is affected by the economic cycle, we want to detrend it by 2 side moving average.
+
+```{r detrend}
+ma5 = stats::filter(gas_ts, sides = 2, rep(1,11)/11)
+ts.plot(gas_ts, ma5,col=c("black","red"))
+```
+
+### Augmented Dickey-Fuller (ADF) Test (Stationarity Check)
+
+Then we want to check if the residual is stationary or not so we do a dick fuller test on it.
+
+```{r stationarity check}
+detrended_gas_ts = gas_ts - ma5
+detrended_gas_ts = na.omit(detrended_gas_ts)
+ts.plot(detrended_gas_ts, ylab="residuals", xlab="Time")
+adf.test(detrended_gas_ts, alternative = "stationary")
+```
+
+Therefore, it it indicates the residual is stationary.
+
+### ACF and PACF
+
+```{r acf}
+acf(detrended_gas_ts, main="ACF plot")
+```
+
+```{r pacf}
+pacf(detrended_gas_ts, main="PACF plot")
+```
+
+With the ACF and PACF plot, we choose to use ARMA(2,1) as our best fit model. We will compare it with the best model given by the package as well.
+
+### ARIMA model
+```{r arima}
+arima_model = Arima(detrended_gas_ts, order = c(2,0,1))
+summary(arima_model)
+```
+
+```{r best auto model}
+auto_fit_model <- auto.arima(gas_ts)
+summary(auto_fit_model)
+```
+
+Therefore, we compared the 2 models, the previous one is based on our preprocessing (deseasonalization and detrend), and the second one is the function provided to automatically choose the model. We found that our model explain the data better and provided a more comprehensive outlook to it. However, the MAPE is much more higher in our ARIMA model, which might be a concern.
+
+
+### Forecasting the Rough Component
+```{r forecast}
+arima_forecasted_values <- forecast(arima_model, h = 12)
+plot(arima_forecasted_values)
+```
+
+Therefore, we get our predicted value of residuals, we want to check if the price predicted follows the same pattern with the true price. So we need to use the trend and seasonal factors.
+
+### Forecasting the Real price
+
+We want to use the mean seasonal factors that we got because we assume they do not change in the long term. For the trend component, we will use a linear prediction to predict that in our best effort.
+
+```{r forecast1}
+ma5 = na.omit(ma5)
+t = 1:length(ma5)
+t2 = t^2
+t3 = t^3
+trend_model = lm(ma5~t+t2+t3)
+summary(trend_model)
+```
+
+```{r forecast2}
+fitted_values = fitted(trend_model)
+fitted_ts = ts(fitted_values, start = start(ma5), frequency = 12)
+ts.plot(ma5, fitted_ts, col=c("black", "blue"))
+```
+
+```{r forecast3}
+# t is 230 here
+t_max <- max(t)
+
+# Number of periods you want to predict into the future
+n <- 6  # For example, predicting the next 6 periods
+
+# Create the future time points
+future_t <- (t_max + 1):(t_max + n)
+future_t2 <- future_t^2
+future_t3 <- future_t^3
+
+# Predict future values
+trend_predictions <- predict(trend_model, newdata = data.frame(t = future_t, t2 = future_t2, t3 = future_t3))
+
+# Convert predictions to a time series object
+trend_ts <- ts(trend_predictions, start = c(2023, 8), frequency = 12)
+
+# Plot the predictions
+ts.plot(ma5, fitted_ts, trend_ts, col=c("black", "blue", "red"), lwd=c(1,1,2))
+```
+
+```{r forecast4}
+predicted_prices <- numeric(5)
+
+# Loop from 8 to 12
+for (i in 8:12) {
+  # Calculate the predicted price
+  predict_price <- trend_ts[i - 7] + shat[i] + arima_forecasted_values$mean[i - 7]
+  
+  # Store the predicted price
+  predicted_prices[i - 7] <- predict_price
+}
+
+# Print the predicted prices
+predicted_prices
+```
+
+Though the values are not very closed to the real data points, it gives some insight about the general trend of the data.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
